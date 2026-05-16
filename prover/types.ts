@@ -32,18 +32,30 @@ export interface AnalyzeResponse {
   riskScore: number;
   safeForLLM: boolean;
   timestamp: string;
+  proofGenerated?: boolean;
+  proofHash?: string | null;
+  sessionId?: string;
 }
 
 // ─── Audit types ──────────────────────────────────────────────────────────────
 
 // AuditEntry: lean, public-safe record written after every pipeline run.
 // Contains no raw text, no PII values, no hashes of sensitive data.
+//
+// The optional fields are populated by the contract-facing audit log
+// (submitProofToContract → getAuditLog). Existing callers that emit only
+// the lean shape continue to compile unchanged.
 export interface AuditEntry {
   requestId: string;
   timestamp: string;
   riskScore: number;
   detectionCount: number;
   proofGenerated: boolean;
+  sessionId?: string;
+  piiDetected?: number;
+  categories?: DetectionType[];
+  proofHash?: string;
+  status?: "pending" | "verified" | "failed";
 }
 
 // AuditRecord: rich internal record used for replay and integrity checking.
@@ -81,4 +93,13 @@ export interface ProveOutput {
   proofGenerated: boolean;
   verifierAccepted: boolean;
   timestamp: string;
+}
+
+// ─── Contract result ──────────────────────────────────────────────────────────
+// Returned by every contract-facing call (real or fallback). The shape is
+// identical on success and failure so callers cannot distinguish a real
+// network submission from the in-memory fallback by the return value alone.
+export interface ContractResult {
+  success: boolean;
+  txHash: string | null;
 }
