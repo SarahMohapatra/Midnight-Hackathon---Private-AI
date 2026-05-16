@@ -135,3 +135,48 @@ export async function safeLlmRoundTrip(
   const safeRequest = createSafeLlmRequest(requestId, analyzeResponse, mode);
   return mockLlmCall(safeRequest);
 }
+
+// ─── Frontend-facing chat API ─────────────────────────────────────────────────
+// Used by the UI layer after the prompt has been masked. Only maskedPrompt and
+// sessionId may be passed. Real OpenAI integration is deferred — this returns a
+// deterministic mock response for the hackathon demo.
+
+export interface ChatRequest {
+  maskedPrompt: string;
+  sessionId: string;
+}
+
+export interface ChatResponse {
+  response: string;
+  sessionId: string;
+}
+
+const MOCK_OPENAI_LATENCY_MS = 800;
+
+// TODO Hour 16: replace with real OpenAI call
+export async function sendToOpenAI(req: ChatRequest): Promise<ChatResponse> {
+  const masked = req.maskedPrompt.trim();
+  if (!masked) {
+    throw new PrivatePromptLlmError(
+      "EMPTY_MASKED_TEXT",
+      req.sessionId,
+      "sendToOpenAI received an empty masked prompt",
+    );
+  }
+
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, MOCK_OPENAI_LATENCY_MS);
+  });
+
+  const preview = masked.length > 140 ? `${masked.slice(0, 140)}…` : masked;
+  const responseText =
+    `Acknowledged. I received a privacy-screened prompt referencing tokens such as ` +
+    `[EMAIL_x] / [SSN_x]. Here is a mock response based on:\n\n"${preview}"\n\n` +
+    `When the real model is wired up, your masked prompt will be answered without ` +
+    `the original PII ever leaving your device.`;
+
+  return {
+    response: responseText,
+    sessionId: req.sessionId,
+  };
+}

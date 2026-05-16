@@ -1,0 +1,503 @@
+:root {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-2: #1c1c1c;
+  --border: #262626;
+  --text: #e6e6e6;
+  --text-dim: #8a8a8a;
+  --text-muted: #5a5a5a;
+  --accent: #00ff88;
+  --accent-dim: #00cc6e;
+  --danger: #ef4444;
+  --warn: #eab308;
+  --orange: #f97316;
+  --purple: #a855f7;
+  --blue: #3b82f6;
+
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo,
+    Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* ─── App shell ────────────────────────────────────────────────────────────── */
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-header .logo-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 12px var(--accent);
+}
+
+.app-header .tag {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  padding: 20px 24px;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+@media (max-width: 960px) {
+  .app-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* ─── Card surface ─────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.card-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ─── PromptInput ──────────────────────────────────────────────────────────── */
+
+.prompt-shell {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.prompt-shell:focus-within {
+  border-color: var(--accent-dim);
+}
+
+.prompt-stack {
+  position: relative;
+  width: 100%;
+  height: 200px;
+}
+
+.prompt-overlay,
+.prompt-textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: auto;
+  border: 0;
+  outline: 0;
+}
+
+.prompt-overlay {
+  pointer-events: none;
+  color: var(--text);
+  background: transparent;
+  z-index: 1;
+}
+
+.prompt-textarea {
+  z-index: 2;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--accent);
+  resize: none;
+}
+
+.prompt-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.prompt-textarea::selection {
+  background: rgba(0, 255, 136, 0.25);
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.prompt-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.btn {
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease, opacity 100ms ease;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #001a0d;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-dim);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* ─── PII highlight colors ────────────────────────────────────────────────── */
+
+.pii {
+  border-radius: 3px;
+  padding: 0 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 2px solid currentColor;
+}
+
+.pii-SSN,
+.pii-CREDIT_CARD {
+  color: var(--danger);
+}
+
+.pii-EMAIL {
+  color: var(--orange);
+}
+
+.pii-API_KEY,
+.pii-BEARER_TOKEN {
+  color: var(--purple);
+}
+
+.pii-PHONE {
+  color: var(--warn);
+}
+
+.pii-NAME,
+.pii-ADDRESS,
+.pii-IP_ADDRESS {
+  color: var(--blue);
+}
+
+/* ─── ThreatIndicator ──────────────────────────────────────────────────────── */
+
+.threat-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.threat-empty::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.threat-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.threat-count strong {
+  font-size: 24px;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.threat-count span {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.threat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.threat-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.threat-item .cat {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.threat-item .arrow {
+  color: var(--text-muted);
+}
+
+.threat-item .tok {
+  color: var(--text);
+}
+
+/* ─── AIResponse ───────────────────────────────────────────────────────────── */
+
+.response-body {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text);
+  min-height: 80px;
+}
+
+.response-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.session-ref {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 6px;
+}
+
+.session-ref .label {
+  color: var(--text-muted);
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton .bar {
+  height: 10px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    #2a2a2a 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton .bar.short {
+  width: 60%;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ─── Dashboard ────────────────────────────────────────────────────────────── */
+
+.scenarios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.scenario-btn {
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 100ms ease;
+}
+
+.scenario-btn:hover {
+  border-color: var(--accent-dim);
+}
+
+.scenario-btn .label {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.metric {
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.metric .num {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  color: var(--text);
+}
+
+.metric .lbl {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.breakdown-empty {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
