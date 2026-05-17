@@ -209,6 +209,7 @@ button { font-family: inherit; }
 
 .thread {
   flex: 1 1 auto;
+  height: 100px;
   overflow-y: auto;
   padding: 28px 28px 8px;
   scroll-behavior: smooth;
@@ -427,6 +428,7 @@ button { font-family: inherit; }
   z-index: 1;
 }
 .composer-textarea {
+  top: -1px;
   z-index: 2;
   background: transparent;
   color: transparent;
