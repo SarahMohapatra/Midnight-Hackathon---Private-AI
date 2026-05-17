@@ -1,123 +1,163 @@
 # PrivatePrompt
 
-Privacy-preserving AI gateway. PrivatePrompt detects and masks sensitive
-content **on-device** before any AI request, then anchors a verifiable
-attestation on the Midnight network for every interaction.
+A **privacy-preserving AI chat demo** (“PrivatePrompt”). It runs detection and masking **in the browser**, optionally records a **minimal attestation** for each interaction (designed for Midnight Compact), then sends **only masked text** to a language model so raw PII never reaches the LLM layer.
 
-The story is end-to-end:
+---
 
-1. The user types a prompt.
-2. The canonical privacy pipeline detects sensitive entities locally.
-3. Detections are replaced with stable tokens (`[EMAIL_1]`, `[SSN_1]`, …).
-4. A `commitment = hash(policyVersion || maskedText)` is computed.
-5. The Midnight `privacy_audit` contract records the attestation
-   `(commitmentHash, status, policyVersion, sessionIdHash, timestamp)`.
-6. Only the **masked** payload is forwarded to the LLM — never the original
-   text. Blocked prompts skip the model entirely.
+## Project idea
 
-## Quick start
+Teams want to ship AI assistants without leaking secrets that users paste into the box. PrivatePrompt showcases a **narrow gateway pattern**:
+
+1. **Detect** sensitive substrings locally (regex-based).
+2. **Mask** them with stable placeholders (`[EMAIL_1]`, `[SSN_1]`, …).
+3. **Score** content risk and classify the outcome (`clean`, `masked`, `blocked`).
+4. **Anchor** a small hash-sized audit record—policy version, commitment over masked text, session fingerprint, privacy status—not the prompt itself (when Midnight path is wired or emulated).
+5. **Call the model only on permitted paths**, using **`maskedText` alone** (`buildSafeLlmRequest` → `callLlm`).
+
+Midnight enters the story as **the intended place** to persist those attestations on-chain once the Compact contract is deployed and a real client replaces the bundled stub.
+
+---
+
+## Scope
+
+### In scope
+
+- End-to-end **React + Vite** UI with chat thread, composer, live PII highlight, Privacy & Audit side panel.
+- Canonical **`runPrivacyPipeline`** in **`prover/`** (detect → mask → risk → **`privacyStatus`** / **`aiDispatch`** → optional Midnight recording).
+- **Demo scenarios A / B / C** for clean, masked, and hard-blocked traffic.
+- **Optional OpenAI Chat Completions** when **`VITE_OPENAI_API_KEY`** is set (otherwise a deterministic mock). See “LLM responses” below.
+- **Midnight-shaped adapter** (`prover/midnight.ts`) plus **`contracts/privacy_audit.compact`** and a **`contracts/generated/`** client placeholder that can be replaced by **`compactc`** output.
+
+### Out of scope (by design today)
+
+- Proving correctness of masking or detection **in zero knowledge**.
+- Replacing regex detection with ML NER everywhere (architecture allows swapping engines later).
+- Production-grade secret handling (**API keys in the browser are a hackathon shortcut**).
+
+---
+
+## Tech stack
+
+| Layer | Choice |
+|--------|--------|
+| UI | React 18, TypeScript |
+| Bundler / dev server | Vite 5 (`@vitejs/plugin-react`), dev server port **5173** |
+| Privacy pipeline | TypeScript modules under **`prover/`** (framework-agnostic) |
+| On-chain artifact | **Midnight Compact** — **`contracts/privacy_audit.compact`** |
+| Compact build | **`compactc`** via `npm run compact:build` → **`contracts/generated/`** |
+| LLM | **`fetch`** to OpenAI Chat Completions when key present; mock otherwise |
+
+Dependencies are minimal on purpose (**`react`** / **`react-dom`** only in `package.json`).
+
+---
+
+## How to use it
+
+### 1. Clone and install
 
 ```bash
-git clone <repo>
+git clone <your-fork-or-repo-url>
 cd Midnight-Hackathon---Private-AI
-
-# 1. install
 npm install
-
-# 2. (optional) configure Midnight
-cp .env.example .env
-# edit .env — leave VITE_CONTRACT_ADDRESS blank to run in local_fallback
-
-# 3. run the app
-npm run dev
-# → http://localhost:5173
 ```
 
-The top bar shows `Midnight · live` when a deployed contract is wired up and
-`Midnight · local fallback` otherwise. Both modes are fully functional for
-the demo; only the attestation destination differs.
+### 2. Configure environment (**`app/.env`**)
+
+Vite **`root`** is **`app/`**, so put env vars in **`app/.env`** (not the repo root, unless you replicate the same vars there without conflict). Example:
+
+```env
+# ── Midnight ─────────────────────────────────────────
+VITE_MIDNIGHT_NETWORK=testnet
+VITE_CONTRACT_ADDRESS=
+VITE_MIDNIGHT_ENABLED=true
+
+# ── OpenAI (optional) ─────────────────────────────────
+# If unset, responses use an offline mock (“PrivatePrompt mock model”).
+VITE_OPENAI_API_KEY=
+```
+
+- Leave **`VITE_CONTRACT_ADDRESS`** empty to stay on **local fallback** (see Midnight section below).
+- **Never commit real API keys.** Keep secrets only in **`app/.env`** (should be gitignored).
+
+### 3. Run the app
+
+```bash
+npm run dev
+```
+
+Open **http://localhost:5173**.
+
+### 4. Use the UI
+
+| Action | Effect |
+|--------|--------|
+| **Scenario A · Clean** | No PII detected; plaintext can go to the model; audit records a clean attestation. |
+| **Scenario B · Masked** | Email/SSN etc. masked; **`maskedText`** is what the LLM receives; placeholders should stay verbatim in drafts. |
+| **Scenario C · Blocked** | Risk above the hard threshold (**`> 0.8`**); AI call is suppressed; blocked outcome still recorded for audit/demo. |
+| Type and send | Same pipeline as presets; composer debounces **live highlighting** (`skipMidnight: true`). |
+| Click a message | Opens Privacy & Audit details for that pipeline run in the right panel. |
+
+Restart **`npm run dev`** after changing **`.env`**.
+
+---
 
 ## Demo scenarios
 
-The composer ships with three one-click presets that exercise every state in
-the pipeline:
+| Scenario | `privacyStatus` | AI dispatch | Audit / Midnight path |
+|----------|-----------------|-------------|------------------------|
+| **A · Clean** | `clean` | Called | Attestation emitted (fallback or live pipeline) |
+| **B · Masked** | `masked` | Called with **masked** text only | Same |
+| **C · Blocked** | `blocked` | Suppressed (`aiDispatch` disallows) | Still records **`blocked`** for traceability |
 
-| Scenario | Expected status | AI dispatch | Midnight |
-|----------|-----------------|-------------|----------|
-| **A · Clean**   | `clean`   | called  | attestation written |
-| **B · Masked**  | `masked`  | called  | attestation written (with masked-commitment) |
-| **C · Blocked** | `blocked` | skipped | attestation written with status `blocked` |
+---
 
-Click any preset and the full pipeline runs end-to-end. Click any message
-bubble in the thread to inspect its Privacy & Audit details in the right
-panel.
-
-## Project layout
+## Architecture (high level)
 
 ```
-prover/                   Canonical, framework-agnostic privacy + Midnight code
-  pipeline.ts             ← single runPrivacyPipeline entry point
-  pii-detection.ts        ← regex detection engine
-  pii.ts                  ← deterministic token masking
-  midnight.ts             ← Midnight adapter (live / local_fallback)
-  audit.ts                ← AuditEntry + AuditRecord stores
-  types.ts                ← canonical types (PipelineResult, MidnightAuditResult, …)
-  index.ts / api.ts       ← legacy facades that delegate to pipeline.ts
-
-contracts/
-  privacy_audit.compact   ← Compact attestation contract
-  generated/              ← TS client emitted by `compactc`
-
-app/
-  index.html
-  src/
-    App.tsx               ← chat shell (top bar, thread, composer, audit panel)
-    components/           ← TopBar, ChatThread, Composer, PrivacyAuditPanel, ScenarioBar
-    library/
-      mockAnalyze.ts      ← analyzePromptFull / previewAnalyze entry points
-      openai.ts           ← enforced SafeLlmRequest gateway
-      midnightClient.ts   ← app-side re-export of prover/midnight
-      prover.ts           ← legacy facade
-    styles.css            ← dark-first design system
+┌───────────────────────┐     debounced preview   ┌──────────────────────┐
+│ Composer               │ ─────────────────────▶ │ PII overlay / scan   │
+└───────────┬───────────┘                         └──────────────────────┘
+            │ send
+            ▼
+┌───────────────────────────────────────┐     ┌───────────────────────────┐
+│ runPrivacyPipeline (prover/pipeline.ts) │ ──▶ │ recordAudit (midnight.ts) │
+│ detect → mask → score → classify        │     │ live OR local_fallback     │
+└───────────┬────────────────────────────┘     └───────────────────────────┘
+            │ PipelineResult
+            ▼
+┌───────────────────────┐     if allowed        ┌───────────────────────────┐
+│ buildSafeLlmRequest   │ ────────────────────▶│ callLlm → OpenAI or mock │
+│ (masked payload only) │                      └───────────────────────────┘
+└───────────────────────┘
 ```
 
-## Architecture
+Single pipeline; UI and **`mockAnalyze`** / **`analyzePromptFull`** consume **`PipelineResult`**.
 
-```
-┌──────────────────────┐
-│  Composer (debounced │── live PII highlight ──┐
-│  preview scan)       │                        │
-└──────────┬───────────┘                        │
-           │ send                               │
-           ▼                                    │
-┌──────────────────────┐    ┌──────────────────▼──────┐
-│ runPrivacyPipeline   │───▶│ Midnight `recordAudit`  │
-│  detect → mask →     │    │ (live or local_fallback)│
-│  score → decide      │    └──────────────────┬──────┘
-└──────────┬───────────┘                       │
-           │ PipelineResult                    │
-           ▼                                   │
-┌──────────────────────┐                       │
-│ buildSafeLlmRequest  │ — refuses on blocked  │
-│ → callLlm (masked)   │                       │
-└──────────┬───────────┘                       │
-           │ AI response                       │
-           ▼                                   │
-┌──────────────────────┐    ┌──────────────────▼──────┐
-│  Chat thread bubble  │    │ Privacy & Audit panel   │
-└──────────────────────┘    └─────────────────────────┘
-```
+---
 
-There is **one** pipeline. `runPrivacyPipeline` returns a `PipelineResult`
-containing the analysis, the Midnight attestation, and an explicit
-`aiDispatch` decision. The UI consumes it directly; the legacy
-`createAnalyzeService` wrapper, `prover/index.ts`, `prover/api.ts`, and
-`app/src/library/prover.ts` all forward through the same function.
+## Midnight: what exists today vs. what’s next
 
-## Midnight integration
+### What ships in this repo (current scope)
 
-The Compact contract `contracts/privacy_audit.compact` exposes a single
-write circuit:
+- **`contracts/privacy_audit.compact`** — Compact contract that **anchors metadata only** (`commitmentHash`, `sessionIdHash`, policy version bytes, **`Uint<64>` timestamp**, **`Uint<8>` status**). **No raw prompt and no masked string** are stored on-chain.
+- **`prover/midnight.ts`** — Adapter that:
+  - tries to load **`contracts/generated/privacyAuditClient`** and call **`createPrivacyAuditClient` / `recordAudit`**;
+  - on failure, missing address, or disabled integration, uses **`local_fallback`**: same **`MidnightAuditResult`** shape, backed by **memory + `localStorage`** so the demo UI still works.
+- **Typical checkout:** **`contracts/generated/privacyAuditClient.ts` is an intentional stub**. It refuses to impersonate **“live chain”** when **`VITE_CONTRACT_ADDRESS`** is unset. Even with an address configured, **the stub still simulates** `recordAudit` locally—**until you replace the generated bundle** with real **`compactc`** output wired to Midnight’s deploy and signer flow.
+
+So: **the integration seams are real** (contract source + adapter API + env). **Talking to Midnight mainnet/testnet through a funded wallet-and-client stack is future work**, not guaranteed by cloning alone.
+
+### What you would do later (toward production Midnight)
+
+1. Install Midnight’s toolchain (including **`compactc`** matching your contract version).
+2. Run **`npm run compact:build`** so **`contracts/generated/`** contains the **real emitted client**, or adjust **`midnight.ts`** to match Midnight’s exported factory names if they differ from the stub.
+3. Deploy **`privacy_audit.compact`** per Midnight docs for your target network.
+4. Put the deployed **`VITE_CONTRACT_ADDRESS`** (and **`VITE_MIDNIGHT_NETWORK`**) in **`app/.env`**.
+5. Wire **wallet / signing** exactly as Midnight requires for invoking **`recordAudit`** from the browser or (recommended) **a small backend relay**—this repo intentionally does **not** ship turnkey wallet plumbing.
+
+Until then the product story remains: **privacy pipeline + attestations anchored in-demo** via **local_fallback** (and optional stub **`live`** façade when an address exists).
+
+Compact entry point (narrow write circuit):
 
 ```
 recordAudit(
@@ -126,60 +166,61 @@ recordAudit(
   policyVersion:  Bytes<32>,
   sessionIdHash:  Bytes<32>,
   timestamp:      Uint<64>,
-) → Field          // returns the new recordId
+) → Field
 ```
 
-It is intentionally narrow: no raw prompt, no masked text, no detection
-categories. The contract **anchors an attestation that the client ran
-policy version `P` and produced commitment `C` at time `T`** — it does not
-claim to prove the regex transformation in zero knowledge.
+See **`contracts/privacy_audit.compact`** for ledger layout and **`README`** “Midnight integration” historical note: the contract attests **“policy `P`, commitment `C`, session fingerprint, status, time `T`”**, not correctness of masking in ZK.
 
-### Compile
+---
 
-```bash
-# requires Midnight Compact compiler `compactc`
-npm run compact:build
+## LLM responses (OpenAI)
+
+- **`app/src/library/openai.ts`** — If **`VITE_OPENAI_API_KEY`** is set and non-empty, **`callLlm`** POSTs **`maskedText`** as the **user** message to OpenAI **`/v1/chat/completions`** (default model **`gpt-4o-mini`**). Otherwise it returns an offline **mock** reply.
+- **Security:** exposing keys in **`VITE_*`** ships them **to every user’s browser**; use only for demos. Production should proxy through your **backend** or user-owned secrets.
+
+---
+
+## Safety guarantees (intended semantics)
+
+- The **canonical path to the model** requires **`SafeLlmRequest`**; **`buildSafeLlmRequest`** rejects when **`aiDispatch.allowed`** is false (blocked prompts never call **`callLlm`**).
+- **Blocked** prompts: **`riskScore > 0.8`** → **`privacyStatus === "blocked"`** → **`aiAllowed === false`**. Cleaner or masked-but-under-ceiling prompts can still invoke the LLM **with masked placeholders only**.
+- Audit-oriented records avoid storing raw detected values; hashing story is **`commitmentHash(maskedText, policyVersion)`** style metadata for the Midnight contract design.
+
+---
+
+## Project layout
+
+```
+prover/                     Canonical privacy + Midnight adapter
+  pipeline.ts               Single runPrivacyPipeline entry point
+  pii-detection.ts          Detection engine (regex-based)
+  pii.ts                    Deterministic masking
+  midnight.ts               Midnight adapter (load client / fallback)
+  types.ts                  Shared types for UI + prover + contract alignment
+  index.ts / api.ts         Thin / legacy exports
+
+contracts/
+  privacy_audit.compact     Compact audit contract source
+  generated/                Stub or compactc emission (privacyAuditClient, …)
+
+app/
+  src/
+    App.tsx                 Chat shell, send flow, Midnight probe
+    components/             Composer, thread, audit panel, top bar
+    library/
+      mockAnalyze.ts        analyzePromptFull, scenarios, preview scan
+      openai.ts             Safe LLM gateway (OpenAI vs mock)
+      midnightClient.ts     Re-exports Midnight helpers for the shell
 ```
 
-The compiled TypeScript client lands in `contracts/generated/`. The
-adapter (`prover/midnight.ts`) dynamically imports it and falls back to
-the in-memory stub when the client cannot be loaded.
-
-### Deploy & wire up
-
-1. Deploy `privacy_audit.compact` with the Midnight toolchain.
-2. Copy the contract address into `.env`:
-
-   ```env
-   VITE_MIDNIGHT_NETWORK=testnet
-   VITE_CONTRACT_ADDRESS=0xYOUR_DEPLOYED_CONTRACT
-   ```
-
-3. Restart `npm run dev`. The top bar should switch from
-   `Midnight · local fallback` to `Midnight · live`.
-
-If no contract address is set, the adapter routes every audit through the
-local fallback path. Audit data still appears in the panel and is
-persisted in `localStorage` so the demo trail survives reloads.
-
-## Safety guarantees
-
-- The original prompt is **never** sent to the LLM. The only entry point
-  to the model is `buildSafeLlmRequest`, which refuses to construct a
-  request when `aiDispatch.allowed === false`.
-- Raw secrets are **never** stored. Audit records only contain hashes
-  and bounded enums.
-- The block decision (`riskScore > 0.8`) short-circuits the LLM call
-  **before** `callLlm` is ever invoked.
-- The Midnight write happens irrespective of block state, so the audit
-  trail records suppressed attempts too.
+---
 
 ## Scripts
 
 | Command | Description |
-|---------|-------------|
-| `npm run dev`          | start the Vite dev server (port 5173)        |
-| `npm run build`        | run `tsc` then build for production          |
-| `npm run preview`      | preview the built bundle                     |
-| `npm run typecheck`    | `tsc --noEmit` only                          |
-| `npm run compact:build`| compile the Compact contract into `contracts/generated` |
+|---------|--------------|
+| `npm run dev` | Vite dev server (**5173**) |
+| `npm run build` | `tsc` + production bundle |
+| `npm run preview` | Preview production build |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run compact:build` | Run **`compactc`** on **`contracts/privacy_audit.compact`** → **`contracts/generated`** |
