@@ -18,5 +18,5 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": ["app/src", "prover"]
+  "include": ["app/src", "prover", "contracts/generated"]
 }

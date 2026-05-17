@@ -1,0 +1,111 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  PrivatePrompt — privacy_audit.compact
+//
+//  Narrow audit/attestation contract for the PrivatePrompt privacy gateway.
+//  This contract DOES NOT prove that PII detection or masking ran correctly.
+//  It anchors a verifiable attestation that:
+//
+//      "A client running policy version P produced commitment C for session S
+//       with privacy status K at time T."
+//
+//  All inputs are fixed-width / hash-sized values — no raw prompt and no
+//  masked-text string ever touches the chain.
+//
+//  Status enum (mirror app `PrivacyStatus`):
+//      0  CLEAN    – no detections, AI dispatched
+//      1  MASKED   – detections found and replaced, AI dispatched
+//      2  BLOCKED  – risk above hard threshold, AI suppressed
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+pragma language_version >= 0.13.0;
+
+import CompactStandardLibrary;
+
+// ── Public ledger state ─────────────────────────────────────────────────────
+// Counter is incremented for every recordAudit call; the returned recordId
+// is the post-increment value, giving an append-only sequence the UI can
+// page through. recordsByStatus lets a verifier query aggregate stats
+// without scanning every record.
+
+export ledger totalAudits: Counter;
+export ledger cleanCount:   Counter;
+export ledger maskedCount:  Counter;
+export ledger blockedCount: Counter;
+
+// Each AuditEntry stores ONLY the bounded metadata the off-chain UI needs to
+// rebuild the trust story. No PII categories, no risk score breakdown, no
+// detection match values.
+struct AuditEntry {
+    commitmentHash: Bytes<32>,
+    sessionIdHash:  Bytes<32>,
+    policyVersion:  Bytes<32>,
+    timestamp:      Uint<64>,
+    status:         Uint<8>,
+}
+
+export ledger audits: Map<Field, AuditEntry>;
+
+// ── Status helpers ──────────────────────────────────────────────────────────
+
+circuit isValidStatus(status: Uint<8>): Boolean {
+    return status == 0 || status == 1 || status == 2;
+}
+
+// ── recordAudit ─────────────────────────────────────────────────────────────
+// Returns the assigned recordId so the caller can render an on-chain link.
+//
+// Inputs are intentionally narrow:
+//   commitmentHash   – one-way digest of (policyVersion || maskedText)
+//   sessionIdHash    – one-way digest of the off-chain session id
+//   policyVersion    – ASCII identifier of the policy that ran (max 32 bytes)
+//   sessionIdHashRaw – duplicate field reserved for future selective disclosure
+//   timestamp        – unix ms timestamp from the client
+//   status           – one of CLEAN | MASKED | BLOCKED
+
+export circuit recordAudit(
+    commitmentHash: Bytes<32>,
+    status:         Uint<8>,
+    policyVersion:  Bytes<32>,
+    sessionIdHash:  Bytes<32>,
+    timestamp:      Uint<64>,
+): Field {
+    assert(isValidStatus(status), "invalid status");
+
+    totalAudits.increment(1);
+    const recordId = totalAudits.read();
+
+    audits.insert(
+        recordId,
+        AuditEntry {
+            commitmentHash: commitmentHash,
+            sessionIdHash:  sessionIdHash,
+            policyVersion:  policyVersion,
+            timestamp:      timestamp,
+            status:         status,
+        },
+    );
+
+    if (status == 0) { cleanCount.increment(1); }
+    if (status == 1) { maskedCount.increment(1); }
+    if (status == 2) { blockedCount.increment(1); }
+
+    return recordId;
+}
+
+// ── Read helpers ────────────────────────────────────────────────────────────
+// listAudits is intentionally omitted as a circuit — the generated TS client
+// pages through the `audits` map directly using the totalAudits counter.
+
+export circuit auditAt(recordId: Field): AuditEntry {
+    return audits.lookup(recordId);
+}
+
+export circuit totals(): (Field, Field, Field, Field) {
+    return (
+        totalAudits.read(),
+        cleanCount.read(),
+        maskedCount.read(),
+        blockedCount.read(),
+    );
+}

@@ -1,8 +1,14 @@
-import type { AnalyzeRequest, AnalyzeResponse, AuditEntry, AuditRecord } from "./types";
+import type {
+  AnalyzeRequest,
+  AnalyzeResponse,
+  AuditEntry,
+  AuditRecord,
+} from "./types";
 
-// ─── AuditStore (rich internal records) ──────────────────────────────────────
-// Holds AuditRecord: contains one-way hashes for integrity checking.
-// Raw prompt text is NEVER stored here.
+// ─── AuditStore (rich in-memory records) ──────────────────────────────────────
+// Used by the legacy createAnalyzeService wrapper. Holds AuditRecord values
+// which include one-way digests of the original and masked prompts. Never
+// stores raw secrets.
 
 export interface AuditStore {
   add(record: AuditRecord): void;
@@ -11,20 +17,18 @@ export interface AuditStore {
 
 export class InMemoryAuditStore implements AuditStore {
   private readonly records: AuditRecord[] = [];
-
   public add(record: AuditRecord): void {
     this.records.push(record);
   }
-
   public list(): AuditRecord[] {
     return [...this.records];
   }
 }
 
-// ─── AuditLog (lean public-safe entries) ─────────────────────────────────────
-// Holds AuditEntry: safe to expose via API or UI. No text, no hashes.
-// Future: replace with an append-only on-chain log via Midnight's
-//         decentralized audit proof mechanism.
+// ─── AuditLog (lean public entries) ───────────────────────────────────────────
+// Pipeline-aligned AuditEntry log. Safe to expose via API and UI: contains
+// only hashes, bounded enums, counts, and timestamps. Mirrors the on-chain
+// attestation record.
 
 export interface AuditLog {
   append(entry: AuditEntry): void;
@@ -33,19 +37,15 @@ export interface AuditLog {
 
 export class InMemoryAuditLog implements AuditLog {
   private readonly log: AuditEntry[] = [];
-
   public append(entry: AuditEntry): void {
     this.log.push(entry);
   }
-
   public entries(): AuditEntry[] {
     return [...this.log];
   }
 }
 
 // ─── Hash utility ─────────────────────────────────────────────────────────────
-// djb2 variant — used only to produce a one-way fingerprint of text values.
-// The input is never recoverable from the output.
 function hashText(value: string): string {
   let hash = 5381;
   for (let index = 0; index < value.length; index += 1) {
@@ -55,8 +55,6 @@ function hashText(value: string): string {
 }
 
 // ─── AuditRecord builder ──────────────────────────────────────────────────────
-// Used by the backend orchestration layer (prover/index.ts).
-// originalHash and maskedHash are one-way digests — raw secrets NEVER stored.
 export function buildAuditRecord(
   request: AnalyzeRequest,
   response: AnalyzeResponse,
@@ -71,38 +69,12 @@ export function buildAuditRecord(
     detectionCount: response.detections.length,
     detectionTypes: response.detections.map((item) => item.type),
     riskScore: response.riskScore,
-    safeForLLM: response.safeForLLM,
+    privacyStatus: response.privacyStatus,
     proofId: proof?.proofId,
     proofVerified: proof?.verified,
   };
 }
 
-// ─── AuditEntry builder ───────────────────────────────────────────────────────
-// Used by the frontend pipeline (app/src/library/prover.ts).
-// Produces a lean record that is safe to surface in logs and API responses.
-// Contains: request ID, timestamp, risk score, detection count, proof status.
-// Does NOT contain: raw text, hashes, detection types, masked content.
-export function buildAuditEntry(
-  requestId: string,
-  response: AnalyzeResponse,
-  proofGenerated: boolean,
-): AuditEntry {
-  return {
-    requestId,
-    timestamp: response.timestamp,
-    riskScore: response.riskScore,
-    detectionCount: response.detections.length,
-    proofGenerated,
-  };
-}
-
-// ─── Audit record verifier ────────────────────────────────────────────────────
 export function verifyAuditRecord(record: AuditRecord): boolean {
-  // Audit verification integration point:
-  // Future (Midnight): verify the proof reference against an on-chain commitment
-  // stored by the Compact contract at submission time.
-  // Future (ZK attestation): use a zero-knowledge proof that the AuditRecord
-  // was produced by a certified privacy-screening computation, without
-  // re-exposing any underlying text.
   return Boolean(record.recordId && record.originalHash && record.maskedHash);
 }

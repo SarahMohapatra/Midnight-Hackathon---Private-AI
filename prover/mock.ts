@@ -1,3 +1,6 @@
+// Legacy export kept only so old import paths keep compiling.
+// New code should consume runPrivacyPipeline from prover/pipeline.ts.
+
 import type { DetectionResult } from "./types";
 
 export interface ProverOutput {
@@ -6,17 +9,19 @@ export interface ProverOutput {
 }
 
 export interface ProverAdapter {
-  generateProof(maskedText: string, detections: DetectionResult[]): Promise<ProverOutput>;
+  generateProof(
+    maskedText: string,
+    detections: DetectionResult[],
+  ): Promise<ProverOutput>;
 }
 
-export class MockProverAdapter implements ProverAdapter {
-  public async generateProof(maskedText: string, detections: DetectionResult[]): Promise<ProverOutput> {
-    // Midnight integration point:
-    // replace this deterministic placeholder with a Midnight-powered circuit call.
-    // This is where witness generation and proving inputs should be assembled.
-    const fingerprint = `${maskedText.length}-${detections.length}-${Date.now()}`;
+export class LocalProverAdapter implements ProverAdapter {
+  public async generateProof(
+    maskedText: string,
+    detections: DetectionResult[],
+  ): Promise<ProverOutput> {
     return {
-      proofId: `proof_${fingerprint}`,
+      proofId: `local_${maskedText.length}_${detections.length}_${Date.now()}`,
       verified: false,
     };
   }

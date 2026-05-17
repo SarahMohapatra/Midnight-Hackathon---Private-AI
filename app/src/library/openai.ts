@@ -1,17 +1,25 @@
 // ─── Safe LLM Passthrough ─────────────────────────────────────────────────────
 // This module is the ONLY place that talks to a language model.
-// Contract: only a SafeLlmRequest may be sent — it has no raw-prompt field.
-// The original user text must never reach this layer.
+// Contract: callers must hand over a SafeLlmRequest (no raw-prompt field).
+// The original user text never reaches this layer.
 
-import type { AnalyzeResponse } from "../../../prover/types";
+import type { PipelineResult } from "../../../prover/types";
 
 // ─── Request / Response types ─────────────────────────────────────────────────
 
 export interface SafeLlmRequest {
-  // maskedText is the only text field — raw PII must never appear here.
+  // maskedText is the ONLY text field. Raw PII must never appear here.
   maskedText: string;
   requestId: string;
+  sessionId: string;
   mode: "strict" | "relaxed";
+  policyVersion: string;
+  // Optional Midnight audit metadata the LLM provider could verify in future.
+  attestation?: {
+    commitmentHash: string;
+    sessionIdHash: string;
+    txHash?: string;
+  };
   timestamp: string;
 }
 
@@ -44,139 +52,100 @@ export class PrivatePromptLlmError extends Error {
   }
 }
 
-// ─── Request builder ──────────────────────────────────────────────────────────
-// Converts an AnalyzeResponse into a SafeLlmRequest.
-// Throws PrivatePromptLlmError if the response is not safe for forwarding.
-// This is the enforced gateway — no bypassing by calling mockLlmCall directly
-// with an unsafe prompt.
+// ─── Enforced gateway ─────────────────────────────────────────────────────────
+// Builds a SafeLlmRequest directly from a PipelineResult. If the pipeline
+// disallowed the AI call, this throws — there is no path that hands raw text
+// to the model.
 
-export function createSafeLlmRequest(
-  requestId: string,
-  analyzeResponse: AnalyzeResponse,
-  mode: "strict" | "relaxed" = "strict",
-): SafeLlmRequest {
-  if (!analyzeResponse.safeForLLM) {
+export function buildSafeLlmRequest(pipeline: PipelineResult): SafeLlmRequest {
+  if (!pipeline.aiDispatch.allowed) {
     throw new PrivatePromptLlmError(
       "UNSAFE_PROMPT_REJECTED",
-      requestId,
-      `Request ${requestId} rejected: riskScore ${analyzeResponse.riskScore} exceeds safe threshold`,
+      pipeline.requestId,
+      pipeline.aiDispatch.reason ?? "AI dispatch not allowed for this prompt",
     );
   }
-
-  const masked = analyzeResponse.maskedText.trim();
+  const masked = pipeline.response.maskedText.trim();
   if (!masked) {
     throw new PrivatePromptLlmError(
       "EMPTY_MASKED_TEXT",
-      requestId,
-      `Request ${requestId}: masked text is empty after analysis`,
+      pipeline.requestId,
+      "Masked text is empty after analysis",
     );
   }
-
   return {
     maskedText: masked,
-    requestId,
-    mode,
+    requestId: pipeline.requestId,
+    sessionId: pipeline.response.sessionId,
+    mode: pipeline.response.detections.length > 0 ? "strict" : "relaxed",
+    policyVersion: pipeline.response.policyVersion,
+    attestation: {
+      commitmentHash: pipeline.midnight.commitmentHash,
+      sessionIdHash: pipeline.midnight.sessionIdHash,
+      txHash: pipeline.midnight.txHash,
+    },
     timestamp: new Date().toISOString(),
   };
 }
 
-// ─── Mock LLM call ─────────────────────────────────────────────────────────────
-// Simulates a real LLM API response for hackathon demo.
-// Replace the body with the real provider SDK call (OpenAI, Anthropic, etc.).
-// IMPORTANT: only request.maskedText is ever forwarded — original prompt is gone.
-//
-// Future (Midnight):
-//   Attach the Midnight proof attestation as a header or signed metadata so the
-//   LLM provider can verify the request was privacy-screened before submission.
-//   Zero-knowledge attestation: the proof certifies PII was removed without
-//   revealing what PII was present or what the original text contained.
+// ─── LLM client ───────────────────────────────────────────────────────────────
+// Mock implementation for the hackathon demo. Replace `mockLlmCall` with a
+// real provider call (OpenAI, Anthropic, …) when wiring production. The
+// request shape is intentionally narrow: maskedText only, plus metadata that
+// helps a privacy-aware backend log/verify the attestation.
 
-export async function mockLlmCall(request: SafeLlmRequest): Promise<SafeLlmResponse> {
-  const masked = request.maskedText.trim();
-  if (!masked) {
+const MOCK_LATENCY_MS = 650;
+
+export async function callLlm(request: SafeLlmRequest): Promise<SafeLlmResponse> {
+  if (!request.maskedText.trim()) {
     throw new PrivatePromptLlmError(
       "EMPTY_MASKED_TEXT",
       request.requestId,
-      "Cannot forward empty masked prompt to LLM",
+      "callLlm received an empty masked prompt",
     );
   }
 
-  // Simulated provider latency
-  await new Promise<void>((resolve) => { setTimeout(resolve, 200); });
+  await new Promise<void>((resolve) => setTimeout(resolve, MOCK_LATENCY_MS));
 
-  const preview = masked.length > 80 ? `${masked.slice(0, 80)}…` : masked;
+  const preview = request.maskedText.length > 160
+    ? `${request.maskedText.slice(0, 160)}…`
+    : request.maskedText;
+
+  const responseText = composeMockResponse(preview, request);
 
   return {
     requestId: request.requestId,
-    responseText: `[Mock LLM] Processed masked prompt: "${preview}"`,
-    model: "mock-gpt-v1",
+    responseText,
+    model: "privateprompt-mock-v1",
     timestamp: new Date().toISOString(),
-    tokensUsed: Math.ceil(masked.length / 4),
+    tokensUsed: Math.ceil(request.maskedText.length / 4),
   };
 }
 
-// ─── LlmClient interface ──────────────────────────────────────────────────────
-// Future: implement this with the real provider SDK and inject it wherever
-// mockLlmCall is currently used.
-
-export interface LlmClient {
-  call(request: SafeLlmRequest): Promise<SafeLlmResponse>;
+// One-shot helper: validate the pipeline, build the request, run the call.
+export async function safeLlmRoundTrip(pipeline: PipelineResult): Promise<SafeLlmResponse> {
+  const request = buildSafeLlmRequest(pipeline);
+  return callLlm(request);
 }
 
-// ─── Convenience helper ───────────────────────────────────────────────────────
-// Combines createSafeLlmRequest + mockLlmCall for pipeline consumers that
-// have an AnalyzeResponse and just want a guarded LLM response back.
+// ─── Mock response composer ──────────────────────────────────────────────────
+// Crafted to make the demo feel real: it acknowledges the privacy guarantee,
+// answers in a generic but reasonable way, and references the attestation
+// without leaking anything sensitive.
 
-export async function safeLlmRoundTrip(
-  requestId: string,
-  analyzeResponse: AnalyzeResponse,
-  mode: "strict" | "relaxed" = "strict",
-): Promise<SafeLlmResponse> {
-  const safeRequest = createSafeLlmRequest(requestId, analyzeResponse, mode);
-  return mockLlmCall(safeRequest);
-}
-
-// ─── Frontend-facing chat API ─────────────────────────────────────────────────
-// Used by the UI layer after the prompt has been masked. Only maskedPrompt and
-// sessionId may be passed. Real OpenAI integration is deferred — this returns a
-// deterministic mock response for the hackathon demo.
-
-export interface ChatRequest {
-  maskedPrompt: string;
-  sessionId: string;
-}
-
-export interface ChatResponse {
-  response: string;
-  sessionId: string;
-}
-
-const MOCK_OPENAI_LATENCY_MS = 800;
-
-// TODO Hour 16: replace with real OpenAI call
-export async function sendToOpenAI(req: ChatRequest): Promise<ChatResponse> {
-  const masked = req.maskedPrompt.trim();
-  if (!masked) {
-    throw new PrivatePromptLlmError(
-      "EMPTY_MASKED_TEXT",
-      req.sessionId,
-      "sendToOpenAI received an empty masked prompt",
-    );
+function composeMockResponse(preview: string, request: SafeLlmRequest): string {
+  const lines = [
+    "Privacy-screened response from PrivatePrompt mock model.",
+    "",
+    `> ${preview}`,
+    "",
+    "I never see your original text — only the masked tokens above. If you wired a",
+    "real LLM provider here, the same masked payload would be forwarded, and the",
+    "Midnight attestation could be sent alongside it so the provider can verify",
+    "the request was privacy-screened by policy " + request.policyVersion + ".",
+  ];
+  if (request.attestation?.txHash) {
+    lines.push("", `Attestation tx: ${request.attestation.txHash}`);
   }
-
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, MOCK_OPENAI_LATENCY_MS);
-  });
-
-  const preview = masked.length > 140 ? `${masked.slice(0, 140)}…` : masked;
-  const responseText =
-    `Acknowledged. I received a privacy-screened prompt referencing tokens such as ` +
-    `[EMAIL_x] / [SSN_x]. Here is a mock response based on:\n\n"${preview}"\n\n` +
-    `When the real model is wired up, your masked prompt will be answered without ` +
-    `the original PII ever leaving your device.`;
-
-  return {
-    response: responseText,
-    sessionId: req.sessionId,
-  };
+  return lines.join("\n");
 }

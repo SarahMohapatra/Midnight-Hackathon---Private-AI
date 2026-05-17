@@ -1,20 +1,22 @@
-// ─── Analysis facade + demo harness ──────────────────────────────────────────
-// mockAnalyze is the public API consumed by the UI layer.
-// Internally it delegates to runProvingPipeline (detect → mask → score →
-// block-check → prove → audit) and unwraps the AnalyzeResponse.
-//
-// This file also owns:
-//   - structured logging helpers
-//   - demo test scenarios
-//   - re-exports of risk-scoring utilities from prover.ts
+// ─── Analysis facade + demo helpers ──────────────────────────────────────────
+// mockAnalyze is the UI's public entry point. It now returns the full
+// PipelineResult (privacy analysis + Midnight attestation + AI dispatch
+// decision) so the chat component can branch on a single object without
+// having to guess from riskScore alone.
 
-import { runProvingPipeline, type PipelineResult } from "./prover";
-import type { AnalyzeRequest, AnalyzeResponse } from "../../../prover/types";
+import {
+  runPrivacyPipeline,
+  type PipelineOptions,
+} from "../../../prover/pipeline";
+import type {
+  AnalyzeRequest,
+  AnalyzeResponse,
+  PipelineResult,
+} from "../../../prover/types";
 
-// Re-export scoring utilities so existing callers don't need to change imports.
-export { computeRiskScore, isSafeForLLM, BLOCK_IF_RISK_OVER } from "./prover";
+export { BLOCK_IF_RISK_OVER, POLICY_VERSION, computeRiskScore } from "../../../prover/pipeline";
 
-// ─── Logging helpers ──────────────────────────────────────────────────────────
+// ─── Structured logging ──────────────────────────────────────────────────────
 
 export interface AnalyzeLogEvent {
   event: "analyze_start" | "analyze_complete" | "analyze_blocked";
@@ -26,31 +28,35 @@ export function createAnalysisLog(
   event: AnalyzeLogEvent["event"],
   details: AnalyzeLogEvent["details"],
 ): AnalyzeLogEvent {
-  return {
-    event,
-    timestamp: new Date().toISOString(),
-    details,
-  };
+  return { event, timestamp: new Date().toISOString(), details };
 }
 
 export function logAnalysisEvent(log: AnalyzeLogEvent): void {
   console.info(`[PrivatePrompt] ${JSON.stringify(log)}`);
 }
 
-// ─── Input normaliser ─────────────────────────────────────────────────────────
+// ─── Entry points ─────────────────────────────────────────────────────────────
 
 export function normalizePromptInput(input: unknown): string {
   if (typeof input !== "string") return "";
   return input.trim();
 }
 
-// ─── Public analysis entry point ──────────────────────────────────────────────
-// Returns an AnalyzeResponse in all cases — callers inspect safeForLLM and
-// riskScore to decide whether to forward the masked prompt to an LLM.
-// Pipeline stage results (proofId, auditEntry, requestId) are available via
-// runProvingPipeline directly when the caller needs richer metadata.
+// Live editor scan: cheap pass with no Midnight write, used by the debounced
+// composer to highlight detections while the user is still typing.
+export async function previewAnalyze(request: AnalyzeRequest): Promise<AnalyzeResponse> {
+  const pipeline = await runPrivacyPipeline(request, { skipMidnight: true });
+  return pipeline.response;
+}
 
-export async function mockAnalyze(request: AnalyzeRequest): Promise<AnalyzeResponse> {
+// Full analysis: runs the canonical pipeline including the Midnight write.
+// Returns the complete PipelineResult so the UI knows whether to dispatch
+// to the LLM, whether Midnight went live or fell back, and what to render in
+// the audit panel.
+export async function analyzePromptFull(
+  request: AnalyzeRequest,
+  options?: PipelineOptions,
+): Promise<PipelineResult> {
   const mode = request.mode ?? "strict";
   const prompt = normalizePromptInput(request.prompt);
 
@@ -62,101 +68,59 @@ export async function mockAnalyze(request: AnalyzeRequest): Promise<AnalyzeRespo
     }),
   );
 
-  // Empty prompts short-circuit before hitting the full pipeline.
-  if (!prompt) {
-    const emptyResponse: AnalyzeResponse = {
-      originalText: "",
-      maskedText: "",
-      detections: [],
-      riskScore: 0,
-      safeForLLM: true,
-      timestamp: new Date().toISOString(),
-    };
-    logAnalysisEvent(
-      createAnalysisLog("analyze_complete", { detections: 0, riskScore: 0, safeForLLM: true }),
-    );
-    return emptyResponse;
-  }
+  const result = await runPrivacyPipeline({ prompt, mode }, options);
 
-  const result: PipelineResult = await runProvingPipeline({ prompt, mode });
-
-  const eventName: AnalyzeLogEvent["event"] =
-    result.status === "blocked" ? "analyze_blocked" : "analyze_complete";
+  const evt: AnalyzeLogEvent["event"] =
+    result.response.privacyStatus === "blocked" ? "analyze_blocked" : "analyze_complete";
 
   logAnalysisEvent(
-    createAnalysisLog(eventName, {
+    createAnalysisLog(evt, {
       requestId: result.requestId,
-      status: result.status,
-      detections: result.analyzeResponse.detections.length,
-      riskScore: result.analyzeResponse.riskScore,
-      safeForLLM: result.analyzeResponse.safeForLLM,
-      proofGenerated: result.auditEntry.proofGenerated,
-      ...(result.blockedReason ? { blockedReason: result.blockedReason } : {}),
+      status: result.response.privacyStatus,
+      detections: result.response.detections.length,
+      riskScore: result.response.riskScore,
+      midnight: result.midnight.mode,
+      aiAllowed: result.aiDispatch.allowed,
     }),
   );
 
-  return result.analyzeResponse;
+  return result;
 }
 
-// ─── Demo / test scenarios ────────────────────────────────────────────────────
+// Backward-compat alias: older callers (and our own debounced editor) just
+// want the AnalyzeResponse. Continues to work after the canonical refactor.
+export async function mockAnalyze(request: AnalyzeRequest): Promise<AnalyzeResponse> {
+  return previewAnalyze(request);
+}
+
+// ─── Demo scenarios (A clean, B masked, C blocked) ────────────────────────────
 
 export interface DemoScenario {
-  id: string;
+  id: "clean" | "masked" | "blocked";
+  label: string;
   description: string;
-  request: AnalyzeRequest;
+  prompt: string;
 }
 
 export const DEMO_SCENARIOS: DemoScenario[] = [
   {
-    id: "empty_prompt",
-    description: "Empty prompt edge case — expect riskScore 0, safeForLLM true",
-    request: { prompt: "   ", mode: "strict" },
+    id: "clean",
+    label: "Scenario A · Clean",
+    description: "No sensitive content. AI runs, Midnight records a clean attestation.",
+    prompt: "Summarise the key trade-offs between row-store and column-store databases.",
   },
   {
-    id: "repeated_secret",
-    description: "Same email twice + SSN — repeated token reuse, riskScore ~0.44",
-    request: {
-      prompt: "Email john@gmail.com then again john@gmail.com, SSN 123-45-6789.",
-      mode: "strict",
-    },
+    id: "masked",
+    label: "Scenario B · Masked",
+    description: "Email + SSN detected. Tokens replace the secrets before the AI request.",
+    prompt:
+      "My email is jane.doe@corp.com and my SSN is 123-45-6789 — draft a polite follow-up to my account manager.",
   },
   {
-    id: "bearer_ip_phone",
-    description: "Bearer token + IP + phone in relaxed mode",
-    request: {
-      prompt: "Bearer sk_test_1234567890ABCDEF from 192.168.1.12, call (212) 555-7821.",
-      mode: "relaxed",
-    },
-  },
-  {
-    id: "malformed_inputs",
-    description: "Malformed email ignored, credit card + GitHub API key detected",
-    request: {
-      prompt: "Use john@@gmail and card 4242 4242 4242 4242 and key ghp_1234567890abcdef",
-      mode: "strict",
-    },
-  },
-  {
-    id: "high_risk_block",
-    description: "Multiple high-risk types — riskScore should exceed BLOCK_IF_RISK_OVER",
-    request: {
-      prompt:
-        "SSN 123-45-6789, card 4242 4242 4242 4242, key sk_live_ABCDEF1234567890, " +
-        "Bearer token_XYZ1234567890ABC, email leak@corp.com, phone 415-555-1212",
-      mode: "strict",
-    },
+    id: "blocked",
+    label: "Scenario C · Blocked",
+    description: "Multiple high-risk fields. AI call is suppressed; Midnight logs a block.",
+    prompt:
+      "Use SSN 987-65-4320, card 4111 1111 1111 1111, key sk_live_ABCDEF1234567890, Bearer secret_TOKEN_ABCDEF1234, email leak@corp.com.",
   },
 ];
-
-export async function runDemoScenarios(): Promise<
-  Array<{ scenario: DemoScenario; response: AnalyzeResponse }>
-> {
-  const outputs: Array<{ scenario: DemoScenario; response: AnalyzeResponse }> = [];
-
-  for (const scenario of DEMO_SCENARIOS) {
-    const response = await mockAnalyze(scenario.request);
-    outputs.push({ scenario, response });
-  }
-
-  return outputs;
-}
