@@ -218,3 +218,4 @@ __marimo__/
 .DS_Store
 .env
 node_modules/
+.env.example

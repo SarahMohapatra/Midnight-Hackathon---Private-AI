@@ -89,12 +89,28 @@ export function buildSafeLlmRequest(pipeline: PipelineResult): SafeLlmRequest {
 }
 
 // ─── LLM client ───────────────────────────────────────────────────────────────
-// Mock implementation for the hackathon demo. Replace `mockLlmCall` with a
-// real provider call (OpenAI, Anthropic, …) when wiring production. The
-// request shape is intentionally narrow: maskedText only, plus metadata that
-// helps a privacy-aware backend log/verify the attestation.
+// When VITE_OPENAI_API_KEY is set, callLlm forwards the masked payload to
+// OpenAI's Chat Completions API. The request shape is intentionally narrow:
+// maskedText only, plus metadata that a privacy-aware provider could verify.
+// When no key is configured, callLlm falls back to a deterministic mock so
+// the demo still runs offline.
+//
+// Security note: shipping an API key to the browser is a hackathon-only
+// shortcut. In production this call belongs on a backend that holds the key.
 
 const MOCK_LATENCY_MS = 650;
+const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const OPENAI_MODEL = "gpt-4o-mini";
+const OPENAI_TIMEOUT_MS = 30_000;
+
+function readOpenAiKey(): string | undefined {
+  if (typeof import.meta === "undefined") return undefined;
+  const env = (import.meta as ImportMeta & {
+    env?: Record<string, string | undefined>;
+  }).env;
+  const key = env?.VITE_OPENAI_API_KEY?.trim();
+  return key && key.length > 0 ? key : undefined;
+}
 
 export async function callLlm(request: SafeLlmRequest): Promise<SafeLlmResponse> {
   if (!request.maskedText.trim()) {
@@ -105,20 +121,114 @@ export async function callLlm(request: SafeLlmRequest): Promise<SafeLlmResponse>
     );
   }
 
-  await new Promise<void>((resolve) => setTimeout(resolve, MOCK_LATENCY_MS));
+  const apiKey = readOpenAiKey();
+  if (apiKey) {
+    return callOpenAi(request, apiKey);
+  }
 
+  await new Promise<void>((resolve) => setTimeout(resolve, MOCK_LATENCY_MS));
   const preview = request.maskedText.length > 160
     ? `${request.maskedText.slice(0, 160)}…`
     : request.maskedText;
-
   const responseText = composeMockResponse(preview, request);
-
   return {
     requestId: request.requestId,
     responseText,
     model: "privateprompt-mock-v1",
     timestamp: new Date().toISOString(),
     tokensUsed: Math.ceil(request.maskedText.length / 4),
+  };
+}
+
+async function callOpenAi(
+  request: SafeLlmRequest,
+  apiKey: string,
+): Promise<SafeLlmResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+
+  const systemPrompt = [
+    "You are an assistant inside a privacy-preserving gateway.",
+    "The user's prompt has already been screened: any sensitive values were",
+    "replaced with stable tokens of the form [EMAIL_1], [SSN_1], [PHONE_2],",
+    "[ADDRESS_1], [API_KEY_1], etc. Treat each token as an opaque placeholder",
+    "for a real value you will never see. Preserve the exact tokens verbatim",
+    "in your response wherever the underlying value would appear (do not",
+    "invent example values, do not change the index, do not unmask).",
+    `Policy version: ${request.policyVersion}.`,
+  ].join(" ");
+
+  let response: Response;
+  try {
+    response = await fetch(OPENAI_ENDPOINT, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: request.maskedText },
+        ],
+      }),
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new PrivatePromptLlmError(
+        "TIMEOUT",
+        request.requestId,
+        `OpenAI request timed out after ${OPENAI_TIMEOUT_MS}ms`,
+      );
+    }
+    throw new PrivatePromptLlmError(
+      "API_UNAVAILABLE",
+      request.requestId,
+      error instanceof Error ? error.message : "OpenAI request failed",
+    );
+  }
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    if (response.status === 429) {
+      throw new PrivatePromptLlmError(
+        "API_RATE_LIMIT",
+        request.requestId,
+        `OpenAI rate limit (${response.status}): ${detail.slice(0, 240)}`,
+      );
+    }
+    throw new PrivatePromptLlmError(
+      "API_UNAVAILABLE",
+      request.requestId,
+      `OpenAI error ${response.status}: ${detail.slice(0, 240)}`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { total_tokens?: number };
+    model?: string;
+  };
+  const responseText = payload.choices?.[0]?.message?.content?.trim() ?? "";
+  if (!responseText) {
+    throw new PrivatePromptLlmError(
+      "API_UNAVAILABLE",
+      request.requestId,
+      "OpenAI returned an empty completion",
+    );
+  }
+
+  return {
+    requestId: request.requestId,
+    responseText,
+    model: payload.model ?? OPENAI_MODEL,
+    timestamp: new Date().toISOString(),
+    tokensUsed: payload.usage?.total_tokens ?? Math.ceil(request.maskedText.length / 4),
   };
 }
 

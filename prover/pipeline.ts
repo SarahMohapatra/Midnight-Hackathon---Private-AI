@@ -38,13 +38,14 @@ import {
 export const POLICY_VERSION = "privateprompt.policy.v1";
 export const MAX_PROMPT_LENGTH = 10_000;
 
-// Soft and hard gates run on the same normalised [0, 1] score.
-//   - aiAllowed = riskScore < AI_SOFT_LIMIT (mode-dependent)
-//   - blocked   = riskScore > BLOCK_IF_RISK_OVER
-// blocked implies !aiAllowed and skips the LLM call entirely.
+// Single gate on the normalised [0, 1] risk score:
+//   - blocked   = riskScore > BLOCK_IF_RISK_OVER  → AI call suppressed
+//   - otherwise (clean or masked) → AI call forwarded with masked text only.
+// Rationale: once detections are replaced with stable tokens the masked
+// text contains no raw PII, so forwarding it is the canonical privacy-
+// preserving behaviour. Only prompts judged too risky to even mask
+// reliably (very dense secrets) are hard-blocked.
 export const BLOCK_IF_RISK_OVER = 0.8;
-export const AI_SOFT_LIMIT_STRICT = 0.25;
-export const AI_SOFT_LIMIT_RELAXED = 0.5;
 
 // Per-type weight used for the [0, 1] risk score.
 const RISK_WEIGHTS: Record<DetectionType, number> = {
@@ -146,14 +147,11 @@ export function decidePrivacyStatus(
   return "clean";
 }
 
-export function decideAiAllowed(
-  riskScore: number,
-  status: PrivacyStatus,
-  mode: "strict" | "relaxed",
-): boolean {
-  if (status === "blocked") return false;
-  const limit = mode === "strict" ? AI_SOFT_LIMIT_STRICT : AI_SOFT_LIMIT_RELAXED;
-  return riskScore <= limit;
+export function decideAiAllowed(status: PrivacyStatus): boolean {
+  // Clean: nothing sensitive detected → forward as-is.
+  // Masked: detections replaced with tokens → masked text is safe to forward.
+  // Blocked: exceeded the hard risk ceiling → suppress the call entirely.
+  return status !== "blocked";
 }
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
@@ -206,7 +204,7 @@ export async function runPrivacyPipeline(
 
   // ── 4. decide ──────────────────────────────────────────────────────────
   const privacyStatus = decidePrivacyStatus(riskScore, finalDetections.length);
-  const aiAllowed = decideAiAllowed(riskScore, privacyStatus, mode);
+  const aiAllowed = decideAiAllowed(privacyStatus);
   const commitment = commitmentHash(maskedText, policyVersion);
   const sessionHash = sessionFingerprint(sessionId);
 
@@ -255,9 +253,7 @@ export async function runPrivacyPipeline(
     called: false,
     reason: aiAllowed
       ? undefined
-      : privacyStatus === "blocked"
-        ? `Risk score ${riskScore.toFixed(2)} exceeds block threshold ${BLOCK_IF_RISK_OVER}`
-        : `Risk score ${riskScore.toFixed(2)} above soft limit for ${mode} mode`,
+      : `Risk score ${riskScore.toFixed(2)} exceeds block threshold ${BLOCK_IF_RISK_OVER}`,
   };
 
   return { requestId, response, audit, midnight, aiDispatch };
